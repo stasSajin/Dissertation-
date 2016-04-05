@@ -1,0 +1,246 @@
+---
+title: "Experiment 5g1"
+author: "Stas Sajin"
+date: "February 10, 2015"
+output: html_document
+---
+
+#Synopsis
+The aim of this document is to provide a summary of the divergence analyses used for revising the dissertation. The divergence analyses aim to figure out at which point in time do two fixation curves diverge from each other.
+
+
+####*Libraries*
+Load the required libraries 
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(dplyr)
+library(parallel)
+library(doParallel)
+library(tidyr)
+library(gridExtra)
+library(eyetrackingR)
+library(plyr)
+library(pbapply)
+```
+
+####*Data Loading*
+Not all colums in the results file are required. Only the following colums will be loaded in R, so as to preserve memory space. The colums are: RECORDING_SESSION_LABEL, IA_FIRST_RUN_START_TIME, IA_FIRST_RUN_START_TIME, IA_FIRST_RUN_END_TIME, IA_SECOND_RUN_START_TIME, IA_SECOND_RUN_END_TIME, IA_THIRD_RUN_START_TIME, IA_THIRD_RUN_END_TIME, IA_LABEL, RESPONSE_ACC, IA_DWELL_TIME, TRIAL_INDEX, target, RESPONSE_RT,trialtype,target,Bilingual.
+
+```{r}
+EyeData <- read.csv("Exp5G1DriftCorrected.csv", na.strings = c("."))[,c('RECORDING_SESSION_LABEL', 'IA_FIRST_RUN_START_TIME', 'IA_FIRST_RUN_START_TIME', 'IA_FIRST_RUN_END_TIME', 'IA_SECOND_RUN_START_TIME', 'IA_SECOND_RUN_END_TIME', 'IA_THIRD_RUN_START_TIME', 'IA_THIRD_RUN_END_TIME', 'IA_LABEL', 'RESPONSE_ACC', 'IA_DWELL_TIME', 'TRIAL_INDEX', 'target', 'RESPONSE_RT', 'trialtype','Bilingual')]
+#change all the NAs to zeros
+EyeData[is.na(EyeData)] <- 0
+#check the dimentions of the dataset
+dim(EyeData)
+#rename the RECORDING_SESSION_LABEL into Subject
+colnames(EyeData)[1] <- "Subject"
+#examine colum names
+names(EyeData)
+```
+
+Examine the structure of the dataframe
+```{r}
+str(EyeData)
+```
+Everything looks fine.
+
+##*Data Cleaning and PreProcessing*
+Remove practice trials
+```{r}
+EyeData <- subset(EyeData, EyeData$trialtype!="Practice")
+```
+
+Check subject accuracy
+```{r}
+SubjectAccuracy<- EyeData %>% group_by(Subject) %>% 
+    summarise(MeanAccuracy=mean(RESPONSE_ACC)) %>% arrange(MeanAccuracy)
+SubjectAccuracy
+mean(SubjectAccuracy$MeanAccuracy)
+SubjectRT<- EyeData %>% group_by(Subject) %>% 
+    summarise(MeanRT=mean(RESPONSE_RT)) %>% arrange(MeanRT)
+SubjectRT
+mean(SubjectRT$MeanRT)
+```
+
+Subject accuracy is very high. 
+
+Remove trials with incorrect accuracy
+```{r}
+CorrectEyeData<-EyeData %>% filter(RESPONSE_ACC==1)
+```
+
+Set up the start time and the end time dummy-coding of each run in the interest area. This creates colums where if a fixation exists during a run, then the run gets 1 (exists) or if there is no fixation in the IA during a run, then the coding is 0 (not exist)
+```{r}
+CorrectEyeData$Fststart <- ifelse(as.numeric(as.character(CorrectEyeData$IA_FIRST_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_FIRST_RUN_START_TIME)), 0) 
+CorrectEyeData$Fstend <- ifelse(as.numeric(as.character(CorrectEyeData$IA_FIRST_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_FIRST_RUN_END_TIME)), 0)
+CorrectEyeData$Secstart <- ifelse(as.numeric(as.character(CorrectEyeData$IA_SECOND_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_SECOND_RUN_START_TIME)), 0)
+CorrectEyeData$Secend <- ifelse(as.numeric(as.character(CorrectEyeData$IA_SECOND_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_SECOND_RUN_END_TIME)), 0)
+CorrectEyeData$Thirdstart <- ifelse(as.numeric(as.character(CorrectEyeData$IA_THIRD_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_THIRD_RUN_START_TIME)), 0)
+CorrectEyeData$Thirdend <- ifelse(as.numeric(as.character(CorrectEyeData$IA_THIRD_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_THIRD_RUN_END_TIME)), 0)
+```
+
+Generate time bins from time 0 to time 6000 in 25 ms bins and assign them to the dataset
+```{r}
+time <- seq(0, 6000, by=25)
+tmatrix <- matrix(nrow=nrow(CorrectEyeData), ncol=length(time))
+dim(tmatrix)
+```
+
+Generate time vectors for each row and column for first, second, and third pass viewings 
+so that viewing periods receive a viewing probability value of 1 
+
+```{r, warning=FALSE, cache=TRUE}
+registerDoParallel(3)
+for(i in 1:nrow(tmatrix)) {
+for(j in 1:length(time)) {
+
+tmatrix[i,j] <-  ifelse(CorrectEyeData$Fststart[i] < time[j] & 
+                CorrectEyeData$Fstend[i] > time[j] |CorrectEyeData$Secstart[i] <
+                time[j] & CorrectEyeData$Secend[i] > time[j] | CorrectEyeData$Thirdstart[i] 
+                < time[j] & CorrectEyeData$Thirdend[i]>time[j], 1,0)
+} 
+}
+```
+
+Combine the CleanEyeData with the time matrix
+```{r}
+CleanData <- cbind(CorrectEyeData, data.frame(tmatrix))
+```
+
+Assign time values to time bin columns
+```{r}
+colnames(CleanData)[23:263] <- seq(0, 6000, by=25)
+```
+
+Subset the dataset with only the necessary colums and remove anything in the memory that might be a memory hog
+```{r}
+CleanData <- CleanData[, -c(2:8,10,11,17:22)]
+```
+
+Put the data in long-format and then calculate the proportion for each time bin for each subject
+```{r}
+CleanData<- CleanData %>% gather(time,value,8:248) %>% filter(trialtype=="Experimental") %>% select(-c(trialtype))
+```
+
+
+#subset the time from information onset
+```{r}
+#change time into numeric
+CleanData$time<-as.numeric(CleanData$time)
+CleanDataSubset<-CleanData %>% filter(time>=4100 & time <=5000)
+
+#change the tiem variable so that it starts at 0.
+CleanDataSubset$time<-CleanDataSubset$time-4100
+
+#The code below aims to identify which time-ranges within trials have trackloss. The code will sum up the value column. If it is 0, this means that there was no fixation to any interest areas and the trial had trackloss, if it is 1, then there was a fixation to one of the interest areas. 
+testSubset<- ddply(CleanDataSubset, c("Subject", "TRIAL_INDEX","time"), 
+             transform, TrackLoss=sum(value))
+
+###remove rows that have value of 0 and trackloss of 1; In other words, this removes the rows for the IA that had no fixation in them and that also had no trackloss
+#for trials with trackloss, I also remove all the non-target rows.
+testSubset2<-testSubset %>% filter(!c(value==0 & TrackLoss==1)) %>%
+    filter(!c(IA_LABEL=="COMPET_IA " & TrackLoss==0)) %>%
+    filter(!c(IA_LABEL=="UNREL1_IA " & TrackLoss==0)) %>%
+    filter(!c(IA_LABEL=="UNREL2_IA " & TrackLoss==0)) %>%
+    filter(!c(IA_LABEL=="UNREL3_IA " & TrackLoss==0)) %>%
+    filter(!c(IA_LABEL=="UNREL4_IA " & TrackLoss==0)) 
+#now we have a trackloss column; in the following step, I will create the AOI Columns
+#first, create filled out empty colums
+namevector<-c("Target","Competitor","Distractor1","Distractor2","Distractor3","Distractor4")
+testSubset2[,namevector]<-NA
+
+#fillout the new AOI colums
+testSubset3<- testSubset2 %>% mutate(
+    Target=ifelse(c(IA_LABEL=="TARGET_IA " & TrackLoss==1),TRUE,FALSE),
+    Competitor=ifelse(c(IA_LABEL=="COMPET_IA " & TrackLoss==1),TRUE,FALSE), 
+    Distractor=ifelse(c(IA_LABEL=="UNREL1_IA " & TrackLoss==1),TRUE,FALSE),
+    Distractor=ifelse(c(IA_LABEL=="UNREL2_IA " & TrackLoss==1),TRUE,FALSE),
+    Distractor=ifelse(c(IA_LABEL=="UNREL3_IA " & TrackLoss==1),TRUE,FALSE),
+    Distractor=ifelse(c(IA_LABEL=="UNREL4_IA " & TrackLoss==1),TRUE,FALSE),
+    TrackLoss=ifelse(TrackLoss==0,TRUE,FALSE))
+
+#ok, so the dataset is in the format that is specified in the eyetrackerR package; Time to perform the analyses
+```
+
+
+```{r}
+EyeData <- make_eyetrackingr_data(testSubset3, 
+                       participant_column = "Subject",
+                       trial_column = "TRIAL_INDEX",
+                       time_column = "time",
+                       trackloss_column = "TrackLoss",
+                       aoi_columns = c('Target','Competitor','Distractor'),
+                       treat_non_aoi_looks_as_missing = FALSE)
+
+
+response_time2 <- make_time_sequence_data(EyeData,
+                        time_bin_size = 25, 
+                        aois = c("Target","Competitor","Distractor"),
+                        summarize_by = "Subject")
+
+response_time2$AOI<-as.factor(response_time2$AOI)
+
+
+```
+
+
+```{r,cache=TRUE}
+###########################Target vs Competitor Bootstrap Analysis
+#filter out the competitor and the target
+Filtered<-response_time2 %>% filter(AOI=="Target" | AOI=="Competitor")
+Filtered$AOI<-as.factor(as.character(Filtered$AOI))
+Filtered$AOI<-relevel(Filtered$AOI, "Target")
+
+#Bootsrapped cluster-based permutation analysis
+df_timeclust <- make_time_cluster_data(Filtered, 
+                                      test= "t.test", paired=TRUE,
+                                      predictor_column = "AOI",
+                                      threshold = -2.09) 
+tstat<-plot(df_timeclust) +  ylab("T-Statistic") + theme_light()
+summary(df_timeclust)
+
+registerDoParallel(1)
+clust_analysis <- analyze_time_clusters(df_timeclust, samples=10000, within_subj=TRUE, paired=TRUE, quiet=TRUE) #
+
+distribution<-plot(clust_analysis) + theme_light()
+
+png(filename="CompvsDistractorExp5g1.png",width=900,height=524)
+grid.arrange(tstat, distribution, nrow=1, ncol=2)
+dev.off()
+
+summary(clust_analysis)
+```
+
+
+```{r, cache=TRUE}
+###########################Competitor vs Average Distractor Bootstrap Analysis
+#filter out the competitor and the target
+Filtered<-response_time2 %>% filter(AOI=="Distractor" | AOI=="Competitor")
+Filtered$AOI<-as.factor(as.character(Filtered$AOI))
+
+#Bootsrapped cluster-based permutation analysis
+df_timeclust <- make_time_cluster_data(Filtered, 
+                                      test= "t.test", paired=TRUE,
+                                      predictor_column = "AOI",
+                                      threshold = -2.09) 
+tstat<-plot(df_timeclust) +  ylab("T-Statistic") + theme_light()
+summary(df_timeclust)
+
+registerDoParallel(1)
+clust_analysis <- analyze_time_clusters(df_timeclust, samples=10000, within_subj=TRUE, paired=TRUE, quiet=TRUE) #
+
+distribution<-plot(clust_analysis) + theme_light()
+
+png(filename="CompvsDistractorExp5g1.png",width=900,height=524)
+grid.arrange(tstat, distribution, nrow=1, ncol=2)
+dev.off()
+
+summary(clust_analysis)
+```
+
+
+
+Session Info
+```{r}
+sessionInfo()
+```

@@ -1,0 +1,601 @@
+---
+title: "Experiment 1"
+author: "Stas Sajin"
+date: "October 10, 2015"
+output: html_document
+---
+
+#Synopsis
+The aim of this document is to provide a summary of all the analyses used in writing up the results for Experiment 1 in the dissertation document.The analyses are brokwn down into several parts:
+
+1. Data Cleaning and Pre-processing
+
+2. Exploratory Analyses
+
+3. Growth Curve Analysis
+
+4. Graphs
+
+
+####*Libraries*
+Load the required libraries 
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(lme4)
+library(lmerTest)
+library(dplyr)
+library(parallel)
+library(doParallel)
+library(tidyr)
+library(gridExtra)
+library(caret)
+```
+
+####*Data Loading*
+Not all colums in the results file are required. Only the following colums will be loaded in R, so as to preserve memory space. The colums are: RECORDING_SESSION_LABEL, IA_FIRST_RUN_START_TIME, IA_FIRST_RUN_START_TIME, IA_FIRST_RUN_END_TIME, IA_SECOND_RUN_START_TIME, IA_SECOND_RUN_END_TIME, IA_THIRD_RUN_START_TIME, IA_THIRD_RUN_END_TIME, IA_LABEL, RESPONSE_ACC, IA_DWELL_TIME, TRIAL_INDEX, target, RESPONSE_RT
+,trialtype,target,Bilingual.
+
+```{r}
+EyeData <- read.csv("Exp1DriftCorrected.csv", na.strings = c("."))[,c('RECORDING_SESSION_LABEL', 'IA_FIRST_RUN_START_TIME', 'IA_FIRST_RUN_START_TIME', 'IA_FIRST_RUN_END_TIME', 'IA_SECOND_RUN_START_TIME', 'IA_SECOND_RUN_END_TIME', 'IA_THIRD_RUN_START_TIME', 'IA_THIRD_RUN_END_TIME', 'IA_LABEL', 'RESPONSE_ACC', 'IA_DWELL_TIME', 'TRIAL_INDEX', 'target', 'RESPONSE_RT', 'trialtype','Bilingual')]
+#change all the NAs to zeros
+EyeData[is.na(EyeData)] <- 0
+#check the dimentions of the dataset
+dim(EyeData)
+#rename the RECORDING_SESSION_LABEL into Subject
+colnames(EyeData)[1] <- "Subject"
+#examine colum names
+names(EyeData)
+```
+
+Examine the structure of the dataframe
+```{r}
+str(EyeData)
+```
+Everything looks fine.
+
+##*Data Cleaning and PreProcessing*
+Remove practice trials
+```{r}
+EyeData <- subset(EyeData, EyeData$trialtype!="Practice")
+```
+
+Check subject accuracy
+```{r}
+SubjectAccuracy<- EyeData %>% group_by(Subject) %>% 
+    summarise(MeanAccuracy=mean(RESPONSE_ACC)) %>% arrange(MeanAccuracy)
+SubjectAccuracy
+SubjectRT<- EyeData %>% group_by(Subject) %>% 
+    summarise(MeanRT=mean(RESPONSE_RT)) %>% arrange(MeanRT)
+SubjectRT
+
+```
+
+Subject accuracy is very high. Allmost all the subjects have 100% accuracy. Only 2 participants have a few incorrect trials.
+
+Remove trials with incorrect accuracy
+```{r}
+CorrectEyeData<-EyeData %>% filter(RESPONSE_ACC==1)
+```
+
+Set up the start time and the end time dummy-coding of each run in the interest area. This creates colums where if a fixation exists during a run, then the run gets 1 (exists) or if there is no fixation in the IA during a run, then the coding is 0 (not exist)
+```{r}
+CorrectEyeData$Fststart <- ifelse(as.numeric(as.character(CorrectEyeData$IA_FIRST_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_FIRST_RUN_START_TIME)), 0) 
+CorrectEyeData$Fstend <- ifelse(as.numeric(as.character(CorrectEyeData$IA_FIRST_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_FIRST_RUN_END_TIME)), 0)
+CorrectEyeData$Secstart <- ifelse(as.numeric(as.character(CorrectEyeData$IA_SECOND_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_SECOND_RUN_START_TIME)), 0)
+CorrectEyeData$Secend <- ifelse(as.numeric(as.character(CorrectEyeData$IA_SECOND_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_SECOND_RUN_END_TIME)), 0)
+CorrectEyeData$Thirdstart <- ifelse(as.numeric(as.character(CorrectEyeData$IA_THIRD_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_THIRD_RUN_START_TIME)), 0)
+CorrectEyeData$Thirdend <- ifelse(as.numeric(as.character(CorrectEyeData$IA_THIRD_RUN_START_TIME)) > 0, as.numeric(as.character(CorrectEyeData$IA_THIRD_RUN_END_TIME)), 0)
+```
+
+Generate time bins from time 0 to time 6000 in 25 ms bins and assign them to the dataset
+```{r}
+time <- seq(0, 6000, by=25)
+tmatrix <- matrix(nrow=nrow(CorrectEyeData), ncol=length(time))
+dim(tmatrix)
+```
+
+Generate time vectors for each row and column for first, second, and third pass viewings 
+so that viewing periods receive a viewing probability value of 1 
+
+```{r, warning=FALSE, cache=TRUE}
+registerDoParallel(3)
+for(i in 1:nrow(tmatrix)) {
+for(j in 1:length(time)) {
+
+tmatrix[i,j] <-  ifelse(CorrectEyeData$Fststart[i] < time[j] & 
+                CorrectEyeData$Fstend[i] > time[j] |CorrectEyeData$Secstart[i] <
+                time[j] & CorrectEyeData$Secend[i] > time[j] | CorrectEyeData$Thirdstart[i] 
+                < time[j] & CorrectEyeData$Thirdend[i]>time[j], 1,0)
+} 
+}
+```
+
+Combine the CleanEyeData with the time matrix
+```{r}
+CleanData <- cbind(CorrectEyeData, data.frame(tmatrix))
+```
+
+Assign time values to time bin columns
+```{r}
+colnames(CleanData)[23:263] <- seq(0, 6000, by=25)
+```
+
+Subset the dataset with only the necessary colums and remove anything in the memory that might be a memory hog
+```{r}
+CleanData <- CleanData[, -c(2:8,10,11,17:22)]
+```
+
+Put the data in long-format and then calculate the proportion for each time bin for each subject
+```{r}
+CleanData<- CleanData %>% gather(time,value,8:248)
+#find proportion for each interest area for each subject
+CleanDataProb<-CleanData %>% group_by(Subject,Bilingual,IA_LABEL,trialtype,time) %>%
+    summarise(Prob=mean(value))
+CleanDataProb$time<-as.numeric(as.character(CleanDataProb$time))
+```
+
+
+##**Exploratory Graphs**
+The aim of this section is to explore pattern in the data without commiting to any formal modeling. Several questions will be addressed thoguh exploratory graphs
+1. What participants do during the period before the onset of the word is presented?
+
+2. Are participants's attention drawn to similar orthographic words before the onset of the target?
+
+3. Is having bilinguals in this experiment an issue? There were 3 subjects who reported being bilingual, though they spoke English at home. 
+
+```{r}
+#subset the required dataset by averaging over subjects; find the usual
+OnlySubjects<-CleanData %>% group_by(IA_LABEL,trialtype,time) %>%
+    summarise(n=n(),Prob=mean(value),sd=sd(value)) %>%
+    mutate(se=sd/sqrt(n), LCI=Prob+qnorm(0.025)*se, UCI=Prob+qnorm(0.975)*se)
+OnlySubjects$time<-as.numeric(as.character(OnlySubjects$time))
+
+levels(OnlySubjects$IA_LABEL) <- list(Target="TARGET_IA ", Competitor="COMPET_IA ", Distractor1="UNREL1_IA ", Distractor2="UNREL2_IA ")
+colnames(OnlySubjects)[1]<-"Interest Area"
+```
+
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+#plot for time 0 to time 6000
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+g1<-ggplot(OnlySubjects, aes(x=time, y=Prob, shape=`Interest Area`, color=`Interest Area`)) +
+    geom_point(size=3) +
+    geom_errorbar(aes(ymin=LCI, ymax=UCI)) + facet_grid(.~trialtype)+
+    scale_x_continuous(limits = c(0, 6000))+
+    geom_vline(xintercept = 3082)+
+    geom_vline(xintercept = 4000)+theme_bw()+
+    scale_fill_manual(values=cbPalette)+scale_colour_manual(values=cbPalette)+
+    scale_x_continuous(name="time from onset of fixation cross(ms)")+
+    scale_y_continuous(name="Fixation Proportion")+
+    theme(legend.text = element_text(size = 12))+
+    theme(legend.title = element_text(size=12, face="bold"))+
+    theme(legend.title = element_text(size=12, face="bold"))+
+    theme(axis.title.x = element_text(face="bold", size=15), axis.text.x  = element_text(size=10))+
+    theme(axis.title.y = element_text(face="bold", size=15), axis.text.y  = element_text(size=10))+
+    theme(strip.text.x = element_text(size=12, face="bold"))+
+    theme(plot.title = element_text(lineheight=.8, face="bold", size=14))
+    
+#plot from time 1000(fixation cross)+1000(word display with no sound)+682(click on duration)+200(pause duration)+200(time it takes to initiate fixation. This plots the fixations starting from the onset of the word till about 3750ms.
+g2<-ggplot(OnlySubjects, aes(x=time, y=Prob, shape=`Interest Area`, color=`Interest Area`)) +
+    geom_point(size=3) +
+    geom_errorbar(aes(ymin=LCI, ymax=UCI)) + facet_grid(.~trialtype)+
+    scale_x_continuous(limits = c(1000+1000+682+200+200, 4000), name="time 200ms from spoken word onset(ms)")+
+    theme_bw()+
+    scale_fill_manual(values=cbPalette)+scale_colour_manual(values=cbPalette)+
+    scale_y_continuous(name="Fixation Proportion")+
+    theme(legend.position="none")+
+    theme(axis.title.x = element_text(face="bold", size=15), axis.text.x  = element_text(size=10))+
+    theme(axis.title.y = element_text(face="bold", size=15), axis.text.y  = element_text(size=10))+
+    theme(plot.title = element_text(lineheight=.8, face="bold", size=14))+
+    theme(strip.text.x = element_text(size=12, face="bold"))
+
+png(filename="plot3Experiment1.png",width=900,height=524)
+grid.arrange(g1, g2, nrow=2, ncol=1, top="Fixation proportion for each trial type")
+dev.off()
+```  
+    
+This graph indicates that participants are looking equally to the fours words before the onset of the word is presented. In other words, they don't show any preferential looks to words that are similar orthographically to each other. The next graph aims to explore if there are any substantial differences between bilinguals and natives that would require the removal of bilingual subjects     
+    
+```{r, warning=FALSE, message=FALSE, cache=TRUE}
+OnlySubjectsB<-CleanData %>% group_by(Bilingual,IA_LABEL,trialtype,time) %>%
+    summarise(n=n(),Prob=mean(value),sd=sd(value)) %>%
+    mutate(se=sd/sqrt(n), LCI=Prob+qnorm(0.025)*se, UCI=Prob+qnorm(0.975)*se)
+OnlySubjectsB$time<-as.numeric(as.character(OnlySubjectsB$time))
+
+ggplot(OnlySubjectsB, aes(x=time, y=Prob, shape=IA_LABEL, color=IA_LABEL)) +
+    geom_point() +
+    geom_errorbar(aes(ymin=LCI, ymax=UCI)) + facet_grid(Bilingual~trialtype)+
+    scale_x_continuous(limits = c(1000+1000+682+200+200, 4000))+
+    geom_vline(xintercept = 3082)+
+    geom_vline(xintercept = 4000)+theme_bw()
+```
+
+There doesn't seem to be any substantial differences between bilinguals and natives. There are only 3 bilingual subjects, so the ammount of variability for bilingual is larger, but other than that, there is nothing to suggest that these subjects should be removed. 
+
+
+##**Growth Curve Analyses**
+The following analyses will examine
+1. the proportion fixations between the Target and the Competitor in Experimental Trials
+2. the proportion fixations between the Competitor and the average of the two distractors in Experimental Trials. 
+
+Exploratory graphs (see above) indicate that there are no effects are observed before the presentation of the speech onset, so proportions are examined from 3100 (about 218 ms after onset of the target) until 4000ms.
+
+###*Target vs. Competitor*
+First, the required subset for the `1st` analysis is created
+```{r}
+model<-CleanDataProb %>% 
+    filter(trialtype=="Experimental", IA_LABEL=="COMPET_IA " | IA_LABEL=="TARGET_IA ", 
+           time>=3100 & time <=4000)
+model$IA_LABEL<-as.factor(as.character(model$IA_LABEL))
+
+#Generate time polynomials up to quadratic poly.
+t25 <- data.frame(poly(unique(model$time),4))
+t25$time <- seq(3100, 4000, by=25)
+
+#add polynomials to data frame
+model <- merge(model , t25, by="time")
+head(model)
+str(model)
+```
+
+The following models are run, with increasing complexity:
+
+Model 1: A base model with no polynomials and only with the fixed effect IA_LABEL and random effect of subject intercept and nested condition with subject intercept.
+
+Model 2: Base model with the addition of the linear polynomial for the fixed and random effect structure
+
+Model 3. Model above+the addition of the quadratic polynomial in the fixed effect and random effect structure
+
+Model 4. Model 3+addition of the third poly in the fixed and random effect structure. Model fails to converge
+
+Model 5. Model 4+addition of the third poly in the fixed and in the random structure(subject only)
+
+Model 6. Model 5+addition of the third poly in the fixed and random structure(subject:condition only)
+```{r LMERTargetVsComp,warning=FALSE, message=FALSE, cache=TRUE}
+registerDoParallel(3)
+#base model; Model1
+Model1<-lmer(Prob ~ IA_LABEL + 
+                 (1| Subject) + 
+                 (1| Subject:IA_LABEL),
+               data=model, REML=T)
+#linear; model 2
+Model2<-lmer(Prob ~ IA_LABEL*X1 + 
+                 (1+X1| Subject) + 
+                 (1+X1| Subject:IA_LABEL),
+               data=model, REML=T)
+#linea+quadratic; model 3
+Model3<-lmer(Prob ~ IA_LABEL*(X1+X2) + 
+                 (1+X1+X2| Subject) + 
+                 (1+X1+X2| Subject:IA_LABEL),
+               data=model, REML=T)
+#Model 4
+Model4<-lmer(Prob ~ IA_LABEL*(X1+X2+X3) + 
+                 (1+X1+X2+X3| Subject) + 
+                 (1+X1+X2+X3| Subject:IA_LABEL),
+               data=model, REML=T)
+#Model 5
+Model5<-lmer(Prob ~ IA_LABEL*(X1+X2+X3) + 
+                 (1+X1+X2+X3| Subject) + 
+                 (1+X1+X2| Subject:IA_LABEL),
+               data=model, REML=T)
+#Model 6
+Model6<-lmer(Prob ~ IA_LABEL*(X1+X2+X3) + 
+                 (1+X1+X2| Subject) + 
+                 (1+X1+X2+X3| Subject:IA_LABEL),
+               data=model, REML=T)
+#compare the models based on ANOVA test
+anova(Model1,Model2,Model3,Model4,Model5,Model6)
+#compare the models based on R^2 based on a paper from Xu (http://onlinelibrary.wiley.com/doi/10.1002/sim.1572/abstract)
+1-var(residuals(Model1))/(var(model.response(model.frame(Model1))))
+1-var(residuals(Model2))/(var(model.response(model.frame(Model2))))
+1-var(residuals(Model3))/(var(model.response(model.frame(Model3))))
+1-var(residuals(Model4))/(var(model.response(model.frame(Model4))))
+1-var(residuals(Model5))/(var(model.response(model.frame(Model5))))
+1-var(residuals(Model6))/(var(model.response(model.frame(Model6))))
+
+#find the summary for model 6
+summary(Model6)
+#find the RMSE
+sqrt(mean((model$Prob-fitted(Model6))^2))
+
+#attach the fitted values to the dataset model, so that they can be used later for graphing purposes
+model$Model1Fitted<-fitted(Model1)
+model$Model2Fitted<-fitted(Model2)
+model$Model3Fitted<-fitted(Model3)
+model$Model4Fitted<-fitted(Model4)
+model$Model5Fitted<-fitted(Model5)
+model$Model6Fitted<-fitted(Model6)
+
+#check that the values are in the dataset
+str(model)
+```
+
+Model 6 performs the best, though LMER is not very susceptible to corss-validation, so the addition of more polynomials might be leading to overfitting
+
+
+###*Compare LMER with Random Forests*
+This portion of the report aims to examine if it is even necessary to have so many polynomials in the fixed effect structure of the LMER model used above. Two random forests models are fitted. The models are cross-validated.
+
+The first models examines the inclusion of all 4 polynomials interacting with the IA_LABEL and the inclusion of Subject ID
+```{r, cache=TRUE}
+set.seed(123)
+modelRF1<-train(Prob~(X1+X2+X3+X4)*IA_LABEL+Subject, method="rf", data=model,
+                trControl = trainControl(method = "cv", number = 5), 
+                 ntree = 200, importance = TRUE)
+#Examine Model Ouput
+modelRF1
+#Examine the best model
+modelRF1$finalModel
+#Examine Variable Importance
+modelRF1$finalModel$importance
+varImpPlot(modelRF1$finalModel)
+#Examine RMSE
+RMSERandomForest<-sqrt(mean((model$Prob-modelRF1$finalModel$predicted)^2))
+
+#attach the predicted values to the dataset for later graphing purposes
+model$RF1<-modelRF1$finalModel$predicted
+```
+
+The variable importance purity indicator shows that the prediction accuracy is driven primarely by the interaction between linear polynomials and condition. A second model is tested in which higher order polynomials are removed
+
+```{r, cache=TRUE}
+set.seed(123)
+modelRF2<-train(Prob~(X1)*IA_LABEL+Subject, method="rf", data=model,
+                trControl = trainControl(method = "cv", number = 5), 
+                 ntree = 200, importance = TRUE)
+#Examine Model Ouput
+modelRF2
+#Examine the best model
+modelRF2$finalModel
+#Examine Variable Importance
+modelRF2$finalModel$importance
+varImpPlot(modelRF2$finalModel)
+#Examine RMSE
+sqrt(mean((model$Prob-modelRF2$finalModel$predicted)^2))
+
+#attach the predicted values to the dataset
+model$RF2<-modelRF2$finalModel$predicted
+```
+
+Interestingly, cross-validation with a simpler random forest model shows a better accuracy on outside samples than the more complex model. It is very likely that using a large number of higher order polynomials leads to overfitting in the case of LMER. A suggestion would be to use model 2 as the model that best describes the data
+
+
+-------------------
+
+###*Competitor vs. Distractor*
+
+The required subset for the `2nd` analysis is created. This analysis compares the competitor to the average of the two distarctors
+
+```{r}
+#find proportion for each interest area for each subject
+levels(CleanData$IA_LABEL) <- list(Distractor="UNREL1_IA ", Distractor="UNREL2_IA ",Competitor="COMPET_IA ", Target="Target_IA ")
+
+CleanDataProb2<-CleanData %>% group_by(Subject,Bilingual,IA_LABEL,trialtype,time) %>%
+    summarise(Prob=mean(value))
+CleanDataProb2$time<-as.numeric(as.character(CleanDataProb2$time))
+
+modelData<-CleanDataProb2 %>% 
+    filter(trialtype=="Experimental", IA_LABEL=="Competitor" | IA_LABEL=="Distractor", 
+           time>=3100 & time <=4000)
+modelData$IA_LABEL<-as.factor(as.character(modelData$IA_LABEL))
+
+#Generate time polynomials up to quadratic poly.
+t25 <- data.frame(poly(unique(modelData$time),4))
+t25$time <- seq(3100, 4000, by=25)
+
+#add polynomials to data frame
+modelData <- merge(modelData , t25, by="time")
+head(modelData)
+str(modelData)
+```
+
+
+###*Run Growth Curve Analyses*
+
+The following models are run, with increasing complexity:
+Model 1: A base model with no polynomials and only with the fixed effect IA_LABEL and random effect of subject intercept and nested condition with subject intercept.
+
+Model 2: Base model with the addition of the linear polynomial for the fixed and random effect structure
+
+Model 3. Model above+the addition of the quadratic polynomial in the fixed effect and random effect structure
+
+Model 4. Model 3+addition of the third poly in the fixed and random effect structure. 
+
+Model 5. Model 4+addition of the fourth poly in the fixed and in the random structure. Model fails to converge
+
+Model 6. Model 5+addition of the fourth poly in the subject random effect structure.
+
+Model 7. Model 7+addition of the fourth poly in the subject:condition random effect structure
+
+```{r LMERCompVsDist,warning=FALSE, cache=TRUE}
+registerDoParallel(3)
+#base model; Model1
+Model1<-lmer(Prob ~ IA_LABEL + 
+                 (1| Subject) + 
+                 (1| Subject:IA_LABEL),
+               data=modelData, REML=T)
+#linear; model 2
+Model2<-lmer(Prob ~ IA_LABEL*X1 + 
+                 (1+X1| Subject) + 
+                 (1+X1| Subject:IA_LABEL),
+               data=modelData, REML=T)
+#linea+quadratic; model 3
+Model3<-lmer(Prob ~ IA_LABEL*(X1+X2) + 
+                 (1+X1+X2| Subject) + 
+                 (1+X1+X2| Subject:IA_LABEL),
+               data=modelData, REML=T)
+#Model 4
+Model4<-lmer(Prob ~ IA_LABEL*(X1+X2+X3) + 
+                 (1+X1+X2+X3| Subject) + 
+                 (1+X1+X2+X3| Subject:IA_LABEL),
+               data=modelData, REML=T)
+#Model 5
+Model5<-lmer(Prob ~ IA_LABEL*(X1+X2+X3+X4) + 
+                 (1+X1+X2+X3+X4| Subject) + 
+                 (1+X1+X2+X3+X4| Subject:IA_LABEL),
+               data=modelData, REML=T)
+#Model 6
+Model6<-lmer(Prob ~ IA_LABEL*(X1+X2+X3+X4) + 
+                 (1+X1+X2+X3+X4| Subject) + 
+                 (1+X1+X2+X3| Subject:IA_LABEL),
+               data=modelData, REML=T)
+#Model 7
+Model7<-lmer(Prob ~ IA_LABEL*(X1+X2+X3+X4) + 
+                 (1+X1+X2+X3| Subject) + 
+                 (1+X1+X2+X3+X4| Subject:IA_LABEL),
+               data=modelData, REML=T)
+#compare the models based on ANOVA test
+anova(Model1,Model2,Model3,Model4,Model5,Model6, Model7)
+#compare the models based on R^2 based on a paper from Xu (http://onlinelibrary.wiley.com/doi/10.1002/sim.1572/abstract)
+1-var(residuals(Model1))/(var(model.response(model.frame(Model1))))
+1-var(residuals(Model2))/(var(model.response(model.frame(Model2))))
+1-var(residuals(Model3))/(var(model.response(model.frame(Model3))))
+1-var(residuals(Model4))/(var(model.response(model.frame(Model4))))
+1-var(residuals(Model5))/(var(model.response(model.frame(Model5))))
+1-var(residuals(Model6))/(var(model.response(model.frame(Model6))))
+1-var(residuals(Model7))/(var(model.response(model.frame(Model7))))
+#find the summary for model 7
+summary(Model7)
+#find the RMSE
+sqrt(mean((modelData$Prob-fitted(Model7))^2))
+
+#attach the fitted values to the dataset modelData, so that they can be used later for graphing purposes
+modelData$Model1Fitted<-fitted(Model1)
+modelData$Model2Fitted<-fitted(Model2)
+modelData$Model3Fitted<-fitted(Model3)
+modelData$Model4Fitted<-fitted(Model4)
+modelData$Model5Fitted<-fitted(Model5)
+modelData$Model6Fitted<-fitted(Model6)
+modelData$Model7Fitted<-fitted(Model7)
+```
+
+Model 7 seems to perform the best, while also converging to a result. Next, I will examine what happens in random forests.
+
+
+####***Compare LMER with Random Forests
+This portion of the report aims to examine if it is even necessary to have so many polynomials in the fixed effect structure of the LMER model used above. Two random forests models are fitted. The models are cross-validated.
+
+The first models examines the inclusion of all 4 polynomials interacting with the IA_LABEL and the inclusion of Subject ID
+```{r, cache=TRUE}
+set.seed(123)
+modelRF1<-train(Prob~(X1+X2+X3+X4)*IA_LABEL+Subject, method="rf", data=modelData,
+                trControl = trainControl(method = "cv", number = 5), 
+                 ntree = 200, importance = TRUE)
+#Examine Model Ouput
+modelRF1
+#Examine the best model
+modelRF1$finalModel
+#Examine Variable Importance
+modelRF1$finalModel$importance
+varImpPlot(modelRF1$finalModel)
+#Examine RMSE
+RMSERandomForest<-sqrt(mean((model$Prob-modelRF1$finalModel$predicted)^2))
+#attach predicted values
+modelData$RF1<-modelRF1$finalModel$predicted
+```
+
+The fourth poly seems to be redundant, and the same could be said about X3. I rerun the random forest without these two variables. 
+
+```{r, cache=TRUE}
+set.seed(123)
+modelRF2<-train(Prob~(X1)*IA_LABEL+Subject, method="rf", data=modelData,
+                trControl = trainControl(method = "cv", number = 5), 
+                 ntree = 200, importance = TRUE)
+#Examine Model Ouput
+modelRF2
+#Examine the best model
+modelRF2$finalModel
+#Examine Variable Importance
+modelRF2$finalModel$importance
+varImpPlot(modelRF2$finalModel)
+#Examine RMSE
+sqrt(mean((modelData$Prob-modelRF2$finalModel$predicted)^2))
+
+#attached predicted values
+modelData$RF2<-modelRF2$finalModel$predicted
+```
+
+The cross-validated random forest model fewer components performs a bit better than the one that has more components. This seems to suggest that Model 3 in LMER would be the most appropriate to use if there are concerns about over-fitting.
+
+##**Graphs**
+Each model used above will be graphed by overlaying it on the real data. First, the plots for the first comparison will be created. For this, I use the model dataset. I put the data in long only format.
+
+```{r, cache=TRUE}
+ModelLong<- model %>% gather(Model,Predictions,11:18)
+#rename the competitor and target
+levels(ModelLong$IA_LABEL) <- list(Competitor="COMPET_IA ", Target="TARGET_IA ")
+#rename the models so that they are more clear
+levels(ModelLong$Model) <- list(`Model 1 Intercept`="Model1Fitted", `Model 2 Linear`="Model2Fitted", `Model 3 Quadratic`="Model3Fitted", `Model 4 Cubic (not converged)`="Model4Fitted", `Model 5 Cubic`="Model5Fitted", `Model 6 Cubic`="Model6Fitted", `Random Forest Complex`="RF1",`Random Forest Simple`="RF2")
+
+#rename some of the colums
+colnames(ModelLong)[4]<-"Interest Area"
+ModelLong[,4]<-factor(ModelLong[,4])
+#compress the data(find the average over subjects)
+ForGraph1<-ModelLong %>% group_by(`Interest Area`,time, Model) %>%
+    summarise(`Fixation Probability`=mean(Prob),Predicted=mean(Predictions))
+```
+
+The code chunk below will plot and save the graph
+
+```{r, warning=FALSE, cache=TRUE}
+#color palette for color-blind
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+#create plot1 for Experiment 1, which goes in the publication
+png(filename="plot1Experiment1.png",width=900,height=524)
+ggplot(ForGraph1, aes(x=time, y=`Fixation Probability`, shape=`Interest Area`, color=`Interest Area`)) +
+    geom_point(size=3) + geom_line(aes(y=Predicted), size=1)+facet_wrap(~Model, nrow=2, ncol=4)+
+    scale_fill_manual(values=cbPalette)+scale_colour_manual(values=cbPalette)+
+    ggtitle("Fixation Proportion for Models\n examining Target vs. Competitor")+
+    theme_bw()+
+    scale_x_continuous(name="time 200ms after spoken word onset(ms)")+
+    theme(legend.text = element_text(size = 12))+
+    theme(legend.title = element_text(size=12, face="bold"))+
+    theme(axis.title.x = element_text(face="bold", size=15), axis.text.x  = element_text(size=12))+
+    theme(axis.title.y = element_text(face="bold", size=15), axis.text.y  = element_text(size=12))+
+    theme(strip.text.x = element_text(size=12, face="bold"))+
+    theme(plot.title = element_text(lineheight=.8, face="bold", size=14))
+dev.off()
+```
+
+Now I will plot the second graph for Competitor vs. average of the two distractors. I will use the same steps as for the graph above
+
+
+```{r, cache=TRUE}
+ModelLong<- modelData %>% gather(Model,Predictions,11:19)
+#rename the models so that they are more clear
+levels(ModelLong$Model) <- list(`Model 1 Intercept`="Model1Fitted", `Model 2 Linear`="Model2Fitted", `Model 3 Quadratic`="Model3Fitted", `Model 4 Cubic`="Model4Fitted", `Model 5 Quartic (not converged)`="Model5Fitted", `Model 6 Quartic`="Model6Fitted",`Model 7 Quartic`="Model7Fitted",`Random Forest Complex`="RF1",`Random Forest Simple`="RF2")
+
+#rename some of the colums
+colnames(ModelLong)[4]<-"Interest Area"
+ModelLong[,4]<-factor(ModelLong[,4])
+#compress the data(find the average over subjects)
+ForGraph2<-ModelLong %>% group_by(`Interest Area`,time, Model) %>%
+    summarise(`Fixation Probability`=mean(Prob),Predicted=mean(Predictions))
+```
+
+The code chunk below will plot and save the graph
+
+```{r, warning=FALSE, cache=TRUE}
+#color palette for color-blind
+cbPalette <- c("#999999", "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+#create plot1 for Experiment 1, which goes in the publication
+png(filename="plot2Experiment1.png",width=900,height=524)
+ggplot(ForGraph2, aes(x=time, y=`Fixation Probability`, shape=`Interest Area`, color=`Interest Area`)) +
+    geom_point(size=3) + geom_line(aes(y=Predicted), size=1)+facet_wrap(~Model, nrow=3, ncol=3)+
+    scale_fill_manual(values=cbPalette)+scale_colour_manual(values=cbPalette)+
+    ggtitle("Fixation Proportion for Models\n examining Target vs. Competitor")+
+    theme_bw()+
+    scale_x_continuous(name="time 200ms after spoken word onset(ms)")+
+    theme(legend.text = element_text(size = 12))+
+    theme(legend.title = element_text(size=12, face="bold"))+
+    theme(axis.title.x = element_text(face="bold", size=15), axis.text.x  = element_text(size=12))+
+    theme(axis.title.y = element_text(face="bold", size=15), axis.text.y  = element_text(size=12))+
+    theme(strip.text.x = element_text(size=12, face="bold"))+
+    theme(plot.title = element_text(lineheight=.8, face="bold", size=14))
+dev.off()
+```
+
+
+Session Info
+```{r}
+sessionInfo()
+```

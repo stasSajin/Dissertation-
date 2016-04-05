@@ -1,0 +1,3 @@
+The file DriftCorrectedVersion2 has some changes in it relative to the original file.
+
+In version 2, I made sure that all distractors that appeared in the primed color were called Unrel1_IA rather than a mix of UNREL1_IA and UNREL2_IA
